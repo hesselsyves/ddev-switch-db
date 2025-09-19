@@ -1,6 +1,15 @@
 # ddev-switch-db
 Switch between active db's inside ddev
 
+## First time setup
+Run this command from inside this repo:
+
+```
+./ddev-switch-db-setup /path/to/your/ddev/project
+```
+This will move over all files needed to your ddev project.
+
+Run this command from inside your ddev project to switch the active db:
 ```
 ddev switch-db [schema-name]
 ```

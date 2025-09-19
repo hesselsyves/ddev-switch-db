@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Config you can tweak ---
+DEFAULT_SCHEMA="tst"   # what to set ACTIVE_DB_SCHEMA to
+SOURCE_HOST_CMDS="${HOME}/sites/ddev-switch-db/.ddev/commands/host"
+ADDITIONAL_SETTINGS_REL="etc/drupal/additional_settings.local.php"
+BEGIN_MARKER="// BEGIN ddev-switch-db"
+END_MARKER="// END ddev-switch-db"
+# ----------------------------
+
+usage() {
+  cat >&2 <<EOF
+Usage: $(basename "$0") [path-to-ddev-project]
+
+- Copies host commands from:
+    ${SOURCE_HOST_CMDS}
+  into the project's:
+    .ddev/commands/host
+
+- Injects DB-switch block into:
+    ${ADDITIONAL_SETTINGS_REL}
+
+- Sets web env var:
+    ACTIVE_DB_SCHEMA=${DEFAULT_SCHEMA}
+
+If no path is given, the current directory is used.
+EOF
+}
+
+# Find project root (the dir that contains .ddev/config.yaml)
+find_project_root() {
+  local start="${1:-$PWD}"
+  local dir="$start"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.ddev/config.yaml" ]]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+PROJECT_DIR="${1:-$PWD}"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage; exit 0
+fi
+
+ROOT="$(find_project_root "$PROJECT_DIR")" || {
+  echo "❌ Not inside a DDEV project (no .ddev/config.yaml found). Provide the project path explicitly." >&2
+  exit 1
+}
+
+echo "🔧 Project: $ROOT"
+
+# 1) Copy host commands
+if [[ ! -d "$SOURCE_HOST_CMDS" ]]; then
+  echo "❌ Source host commands folder not found: $SOURCE_HOST_CMDS" >&2
+  exit 1
+fi
+
+mkdir -p "$ROOT/.ddev/commands/host"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a "$SOURCE_HOST_CMDS"/ "$ROOT/.ddev/commands/host"/
+else
+  # fallback if rsync not available
+  cp -a "$SOURCE_HOST_CMDS"/. "$ROOT/.ddev/commands/host"/
+fi
+# ensure executables
+chmod +x "$ROOT/.ddev/commands/host/"* 2>/dev/null || true
+echo "📎 Copied host commands into .ddev/commands/host"
+
+# 2) Ensure/add additional_settings.local.php block
+SETTINGS_PATH="$ROOT/$ADDITIONAL_SETTINGS_REL"
+mkdir -p "$(dirname "$SETTINGS_PATH")"
+TMP="$(mktemp)"
+
+# If file exists, strip existing managed block; else start empty file
+if [[ -f "$SETTINGS_PATH" ]]; then
+  awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" '
+    BEGIN {skip=0}
+    index($0, begin) {skip=1; next}
+    index($0, end) {skip=0; next}
+    skip==0 {print}
+  ' "$SETTINGS_PATH" > "$TMP"
+else
+  : > "$TMP"
+fi
+
+# Append our managed block (always start a PHP block to be safe)
+cat >> "$TMP" <<'PHP'
+
+// BEGIN ddev-switch-db
+$active = getenv('ACTIVE_DB_SCHEMA') ?: 'prd';
+
+// Standard DDEV creds.
+$databases['default']['default'] = [
+  'database'  => $active,
+  'username'  => 'db',
+  'password'  => 'db',
+  'host'      => 'db',
+  'port'      => '3306',
+  'driver'    => 'mysql',
+  'prefix'    => '',
+  'collation' => 'utf8mb4_general_ci',
+];
+
+try {
+  $pdo = new PDO('mysql:host=db;port=3306', 'db', 'db');
+  $stmt = $pdo->query("SHOW DATABASES LIKE " . $pdo->quote($active));
+  if ($stmt->rowCount() === 0) {
+    \Drupal::messenger()->addWarning(t('ACTIVE_DB_SCHEMA "@db" not found.', ['@db' => $active]));
+  }
+} catch (\Throwable $e) {
+  // ignore in local bootstrap if MySQL not reachable yet
+}
+// END ddev-switch-db
+PHP
+
+# Add markers (comments) around block for idempotent updates
+# Replace plain comment lines with marker variables
+sed -i'' -e "s#// BEGIN ddev-switch-db#${BEGIN_MARKER}#" -e "s#// END ddev-switch-db#${END_MARKER}#" "$TMP" 2>/dev/null || true
+
+mv "$TMP" "$SETTINGS_PATH"
+echo "🧩 Ensured ${ADDITIONAL_SETTINGS_REL} contains the DB-switch block"
+
+# 3) Set ACTIVE_DB_SCHEMA in config.yaml via ddev
+(
+  cd "$ROOT"
+  if ! command -v ddev >/dev/null 2>&1; then
+    echo "⚠️  'ddev' command not found on PATH; skipping config update. You can run this later:" >&2
+    echo "    ddev config --web-environment='ACTIVE_DB_SCHEMA=${DEFAULT_SCHEMA}'" >&2
+  else
+    ddev config --web-environment="ACTIVE_DB_SCHEMA=${DEFAULT_SCHEMA}" >/dev/null
+    echo "🌐 Set web_environment: ACTIVE_DB_SCHEMA=${DEFAULT_SCHEMA}"
+  fi
+)
+
+echo "✅ Done."
+echo "   - Host commands ready: $ROOT/.ddev/commands/host"
+echo "   - Settings updated:     $ADDITIONAL_SETTINGS_REL"
+echo "   - Env var set:          ACTIVE_DB_SCHEMA=${DEFAULT_SCHEMA}"
