@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${1:-}"
+
+if [[ -z "$target" ]]; then
+  echo "Usage: ddev switch-db [prd|tst|acc]" >&2
+  exit 1
+fi
+
+# Ensure the schema exists and grant privileges to 'db'
+ddev mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS \`${target}\`;
+  GRANT ALL PRIVILEGES ON \`${target}\`.* TO 'db'@'%';
+  FLUSH PRIVILEGES;"
+
+echo "✅ ensured schema: ${target}"
+
+# Switch env var
+ddev config --web-environment="ACTIVE_DB_SCHEMA=${target}"
+
+# Restart services so the env var takes effect
+ddev restart
+
+# Clear Drupal caches
+ddev drush cr
+
+echo "🎉 Active DB switched to: ${target}"
+
