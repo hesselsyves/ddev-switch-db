@@ -6,6 +6,7 @@ ddev switch-db [schema-name]
 ```
 
 Copy `.ddev/host/switch-db` in your project and make it executable.
+Copy `.ddev/host/import-active` in your project and make it executable.
 
 Add this to your `.ddev/config.yaml`:
 ```yaml
@@ -39,4 +40,9 @@ try {
 } catch (\Throwable $e) {
   // ignore in local bootstrap if MySQL not reachable yet
 }
+```
+
+To import a db dump into the active schema, use:
+```
+ddev import-active --src=path/to/dump.sql.gz
 ```

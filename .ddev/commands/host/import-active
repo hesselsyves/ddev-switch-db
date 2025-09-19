@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Read the active schema from the web container's env (defaults to 'prd')
+active="$(ddev exec printenv ACTIVE_DB_SCHEMA || true)"
+active="${active:-prd}"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: ddev import-active <dump.sql[.gz|.xz|.bz2]> [extra ddev import-db args]" >&2
+  exit 1
+fi
+
+echo "📦 Importing into schema: ${active}"
+ddev import-db --database="${active}" "$@"
